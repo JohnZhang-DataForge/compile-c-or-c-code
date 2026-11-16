@@ -174,21 +174,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
-          $args = @('-S', $env:PROJECT_ROOT, '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
+          $cmakeArgs = @('-S', $env:PROJECT_ROOT, '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
           if ($env:BUILD_MODE -eq 'simple') {
-            $args = @('-S', (Join-Path $env:GITHUB_WORKSPACE 'tools/auto-project'), '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64', "-DINPUT_SOURCE=$env:PROJECT_ROOT", "-DOUTPUT_NAME=$env:EXE_NAME")
+            $cmakeArgs = @('-S', (Join-Path $env:GITHUB_WORKSPACE 'tools/auto-project'), '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64', "-DINPUT_SOURCE=$env:PROJECT_ROOT", "-DOUTPUT_NAME=$env:EXE_NAME")
           }
-          & cmake @args
+          & cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed. Review dependency/configuration errors above.' }
 
       - name: Compile and link
         run: |
           $ErrorActionPreference = 'Stop'
           $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
-          $args = @('--build', $build, '--config', $env:BUILD_TYPE, '--parallel', '2')
+          $cmakeArgs = @('--build', $build, '--config', $env:BUILD_TYPE, '--parallel', '2')
           if ($env:BUILD_MODE -eq 'cmake' -and $env:CMAKE_TARGET) {
             if ($env:CMAKE_TARGET -notmatch '^[A-Za-z0-9_.+-]+$') { throw 'Invalid CMake target name.' }
-            $args += @('--target', $env:CMAKE_TARGET)
+            $cmakeArgs += @('--target', $env:CMAKE_TARGET)
           }
           & cmake @args
           if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Check compiler errors and missing dependency messages above.' }
