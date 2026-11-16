@@ -59,28 +59,29 @@ jobs:
             throw 'Source directory must be inside this repository.'
           }
           if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw "Source directory not found: $source" }
+          $source = $source.Replace('\', '/')
           $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
-          $args = @('-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
+          $cmakeArgs = @('-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
           if ($env:BUILD_MODE -eq 'auto') {
             if ($env:EXE_NAME -notmatch '^[A-Za-z0-9_-]+$') { throw 'Use letters, digits, underscores or hyphens for the executable name.' }
-            $args += @('-S', (Join-Path $root 'tools/auto-project'), "-DINPUT_SOURCE=$source", "-DOUTPUT_NAME=$env:EXE_NAME")
+            $cmakeArgs += @('-S', (Join-Path $root 'tools/auto-project'), "-DINPUT_SOURCE=$source", "-DOUTPUT_NAME=$env:EXE_NAME")
           } elseif ($env:BUILD_MODE -eq 'cmake') {
             if (-not (Test-Path -LiteralPath (Join-Path $source 'CMakeLists.txt'))) { throw 'CMake mode requires CMakeLists.txt in the source directory.' }
-            $args += @('-S', $source)
+            $cmakeArgs += @('-S', $source)
           } else { throw 'Unsupported build mode.' }
-          & cmake @args
+          & cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
 
       - name: Compile and link
         run: |
           $ErrorActionPreference = 'Stop'
           $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
-          $args = @('--build', $build, '--config', $env:BUILD_TYPE, '--parallel', '2')
+          $cmakeArgs = @('--build', $build, '--config', $env:BUILD_TYPE, '--parallel', '2')
           if ($env:BUILD_MODE -eq 'cmake' -and $env:CMAKE_TARGET) {
             if ($env:CMAKE_TARGET -notmatch '^[A-Za-z0-9_.+-]+$') { throw 'Invalid CMake target name.' }
-            $args += @('--target', $env:CMAKE_TARGET)
+            $cmakeArgs += @('--target', $env:CMAKE_TARGET)
           }
-          & cmake @args
+          & cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Check the compiler errors above.' }
 
       - name: Collect executables and DLLs
