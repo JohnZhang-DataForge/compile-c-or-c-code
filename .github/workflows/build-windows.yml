@@ -161,7 +161,7 @@ jobs:
             $entries = @($archive.Entries)
             "Archive entries: $($entries.Count)" | Write-Host
             $entries | Select-Object -First 250 -ExpandProperty FullName | ForEach-Object { Write-Host $_ }
-            foreach ($pattern in @('*/README*','README*','*/build.bat','build.bat','*/CMakeLists.txt','CMakeLists.txt','*/.gitmodules','.gitmodules','*/requirements*.txt','requirements*.txt','*/pyproject.toml','pyproject.toml')) {
+            foreach ($pattern in @('*/README*','README*','*/docs/building.md','docs/building.md','*/build.bat','build.bat','*/build.ps1','build.ps1','*/build.py','build.py','*/CMakeLists.txt','CMakeLists.txt','*/CMakePresets.json','CMakePresets.json','*/.gitmodules','.gitmodules','*/requirements*.txt','requirements*.txt','*/pyproject.toml','pyproject.toml')) {
               foreach ($entry in $entries | Where-Object { $_.FullName -like $pattern -and $_.Length -lt 150000 }) {
                 Write-Host "`n===== $($entry.FullName) ====="
                 $reader = [IO.StreamReader]::new($entry.Open())
