@@ -1,35 +1,50 @@
 name: Build Windows EXE
-run-name: Build Windows EXE — ${{ inputs.source_dir || 'src' }}
+run-name: Build Windows EXE — ${{ inputs.zip_path || inputs.source_dir || 'src' }}
+
 on:
   workflow_dispatch:
     inputs:
+      zip_path:
+        description: Optional ZIP path committed to this repository (for example uploads/totk-pc-main.zip). Leave empty to use a folder.
+        default: ''
+        required: false
+        type: string
+      project_subdir:
+        description: Optional project directory inside the ZIP (for example source or app). Leave empty for automatic project-root detection.
+        default: ''
+        required: false
+        type: string
       source_dir:
-        description: Source directory containing your C / C++ files
+        description: Existing repository folder build option; used only when ZIP path is empty.
         default: src
-        required: true
+        required: false
         type: string
       mode:
-        description: auto discovers sources; cmake uses your CMakeLists.txt
+        description: auto detects CMakeLists.txt; simple forces recursive source compilation; cmake requires CMakeLists.txt.
         default: auto
+        required: true
         type: choice
-        options: [auto, cmake]
+        options: [auto, simple, cmake]
       exe_name:
-        description: Executable name without .exe (auto mode)
+        description: Executable name without .exe (simple mode only)
         default: program
         required: true
         type: string
       build_type:
         description: Build configuration
         default: Release
+        required: true
         type: choice
         options: [Release, Debug]
       target:
-        description: Optional CMake target (cmake mode only)
+        description: Optional CMake target. Leave empty to build the project's default targets.
         default: ''
+        required: false
         type: string
   push:
     paths:
       - .github/workflows/build-windows.yml
+      - README.md
 
 permissions:
   contents: read
@@ -37,63 +52,157 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 60
     defaults:
       run:
         shell: pwsh
     env:
+      ZIP_PATH: ${{ inputs.zip_path }}
+      PROJECT_SUBDIR: ${{ inputs.project_subdir }}
       SOURCE_DIR: ${{ inputs.source_dir || 'src' }}
       BUILD_MODE: ${{ inputs.mode || 'auto' }}
       EXE_NAME: ${{ inputs.exe_name || 'program' }}
       BUILD_TYPE: ${{ inputs.build_type || 'Release' }}
       CMAKE_TARGET: ${{ inputs.target }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: Configure
+      - name: Prepare project source
+        id: source
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
-          $source = [IO.Path]::GetFullPath((Join-Path $root $env:SOURCE_DIR))
-          if ($source -ne $root -and -not $source.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'Source directory must be inside this repository.'
+          $repo = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          if ($env:ZIP_PATH) {
+            $zipRelative = $env:ZIP_PATH.Replace('/', '\\')
+            if ([IO.Path]::IsPathRooted($zipRelative) -or $zipRelative -match '(^|\\)\.\.(\\|$)') {
+              throw 'ZIP path must be a relative path inside the repository.'
+            }
+            $zipPath = [IO.Path]::GetFullPath((Join-Path $repo $zipRelative))
+            if (-not $zipPath.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+              throw 'ZIP path must remain inside the repository.'
+            }
+            if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf) -or [IO.Path]::GetExtension($zipPath) -ne '.zip') {
+              throw "ZIP file not found or not a .zip file: $env:ZIP_PATH"
+            }
+
+            Add-Type -AssemblyName System.IO.Compression
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $extractRoot = Join-Path $env:RUNNER_TEMP 'uploaded-project'
+            New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+            $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+            try {
+              foreach ($entry in $archive.Entries) {
+                $name = $entry.FullName.Replace('\\', '/')
+                if ([string]::IsNullOrWhiteSpace($name) -or $name.StartsWith('/') -or $name -match '^[A-Za-z]:' -or $name -match '(^|/)\.\.(?:/|$)') {
+                  throw "Unsafe ZIP entry path rejected: $($entry.FullName)"
+                }
+                if (($entry.ExternalAttributes -band 0xF0000000) -eq 0xA0000000) {
+                  throw "Symbolic links are not allowed in uploaded ZIPs: $($entry.FullName)"
+                }
+                $destination = [IO.Path]::GetFullPath((Join-Path $extractRoot ($name.Replace('/', [IO.Path]::DirectorySeparatorChar))))
+                if (-not $destination.StartsWith($extractRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                  throw "ZIP entry escapes extraction directory: $($entry.FullName)"
+                }
+                if ($name.EndsWith('/')) {
+                  New-Item -ItemType Directory -Force -Path $destination | Out-Null
+                } else {
+                  New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+                  [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $true)
+                }
+              }
+            } finally {
+              $archive.Dispose()
+            }
+
+            $topItems = @(Get-ChildItem -LiteralPath $extractRoot -Force)
+            $projectRoot = $extractRoot
+            if ($topItems.Count -eq 1 -and $topItems[0].PSIsContainer) {
+              $projectRoot = $topItems[0].FullName
+            }
+            if ($env:PROJECT_SUBDIR) {
+              $sub = $env:PROJECT_SUBDIR.Replace('/', '\\')
+              if ([IO.Path]::IsPathRooted($sub) -or $sub -match '(^|\\)\.\.(\\|$)') {
+                throw 'Project subdirectory must be a relative path inside the extracted ZIP.'
+              }
+              $projectRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $sub))
+              if (-not $projectRoot.StartsWith($extractRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Project subdirectory escapes the extraction directory.'
+              }
+            }
+            if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
+              throw "Project subdirectory not found in ZIP: $env:PROJECT_SUBDIR"
+            }
+          } else {
+            $projectRoot = [IO.Path]::GetFullPath((Join-Path $repo $env:SOURCE_DIR))
+            if (-not $projectRoot.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and $projectRoot -ne $repo) {
+              throw 'Source directory must be inside this repository.'
+            }
+            if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
+              throw "Source directory not found: $projectRoot"
+            }
           }
-          if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw "Source directory not found: $source" }
-          $source = $source.Replace('\', '/')
-          $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
-          $cmakeArgs = @('-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
+
+          "PROJECT_ROOT=$projectRoot" >> $env:GITHUB_ENV
+          "PROJECT_ROOT=$projectRoot" >> $env:GITHUB_OUTPUT
+          "Project source: $projectRoot" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Detect build system
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmakeFile = Join-Path $env:PROJECT_ROOT 'CMakeLists.txt'
           if ($env:BUILD_MODE -eq 'auto') {
-            if ($env:EXE_NAME -notmatch '^[A-Za-z0-9_-]+$') { throw 'Use letters, digits, underscores or hyphens for the executable name.' }
-            $cmakeArgs += @('-S', (Join-Path $root 'tools/auto-project'), "-DINPUT_SOURCE=$source", "-DOUTPUT_NAME=$env:EXE_NAME")
-          } elseif ($env:BUILD_MODE -eq 'cmake') {
-            if (-not (Test-Path -LiteralPath (Join-Path $source 'CMakeLists.txt'))) { throw 'CMake mode requires CMakeLists.txt in the source directory.' }
-            $cmakeArgs += @('-S', $source)
-          } else { throw 'Unsupported build mode.' }
-          & cmake @cmakeArgs
-          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
+            if (Test-Path -LiteralPath $cmakeFile -PathType Leaf) {
+              $env:BUILD_MODE = 'cmake'
+            } else {
+              $env:BUILD_MODE = 'simple'
+            }
+          }
+          if ($env:BUILD_MODE -eq 'cmake' -and -not (Test-Path -LiteralPath $cmakeFile -PathType Leaf)) {
+            throw "CMake mode requires CMakeLists.txt at project root: $env:PROJECT_ROOT. Use Project subdirectory if it is nested."
+          }
+          if ($env:BUILD_MODE -eq 'simple' -and $env:EXE_NAME -notmatch '^[A-Za-z0-9_-]+$') {
+            throw 'Use letters, digits, underscores or hyphens for the executable name.'
+          }
+          "BUILD_MODE=$env:BUILD_MODE" >> $env:GITHUB_ENV
+          "Detected build mode: $env:BUILD_MODE" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Configure CMake
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
+          $args = @('-S', $env:PROJECT_ROOT, '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
+          if ($env:BUILD_MODE -eq 'simple') {
+            $args = @('-S', (Join-Path $env:GITHUB_WORKSPACE 'tools/auto-project'), '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64', "-DINPUT_SOURCE=$env:PROJECT_ROOT", "-DOUTPUT_NAME=$env:EXE_NAME")
+          }
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed. Review dependency/configuration errors above.' }
 
       - name: Compile and link
         run: |
           $ErrorActionPreference = 'Stop'
           $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
-          $cmakeArgs = @('--build', $build, '--config', $env:BUILD_TYPE, '--parallel', '2')
+          $args = @('--build', $build, '--config', $env:BUILD_TYPE, '--parallel', '2')
           if ($env:BUILD_MODE -eq 'cmake' -and $env:CMAKE_TARGET) {
             if ($env:CMAKE_TARGET -notmatch '^[A-Za-z0-9_.+-]+$') { throw 'Invalid CMake target name.' }
-            $cmakeArgs += @('--target', $env:CMAKE_TARGET)
+            $args += @('--target', $env:CMAKE_TARGET)
           }
-          & cmake @cmakeArgs
-          if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Check the compiler errors above.' }
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Check compiler errors and missing dependency messages above.' }
 
-      - name: Collect executables and DLLs
+      - name: Collect executables and build-produced DLLs
         run: |
           $ErrorActionPreference = 'Stop'
           $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
           $artifact = Join-Path $env:RUNNER_TEMP 'windows-exe'
           New-Item -ItemType Directory -Force -Path $artifact | Out-Null
           $files = @(Get-ChildItem -LiteralPath $build -Recurse -File | Where-Object {
-            $_.Extension -in '.exe', '.dll', '.pdb' -and $_.FullName -notmatch '[\\/]CMakeFiles[\\/]'
+            $_.Extension -in '.exe', '.dll' -and $_.FullName -notmatch '[\\/]CMakeFiles[\\/]'
           })
-          if (-not ($files | Where-Object Extension -eq '.exe')) { throw 'Build produced no executable.' }
+          if (-not ($files | Where-Object Extension -eq '.exe')) { throw 'Build produced no executable. Select the correct CMake target if necessary.' }
           foreach ($file in $files) {
             $relative = [IO.Path]::GetRelativePath($build, $file.FullName)
             $destination = Join-Path $artifact $relative
@@ -101,10 +210,12 @@ jobs:
             Copy-Item -LiteralPath $file.FullName -Destination $destination
           }
           "## Windows build succeeded" >> $env:GITHUB_STEP_SUMMARY
-          "Download **windows-exe** from this run's Artifacts section and extract it." >> $env:GITHUB_STEP_SUMMARY
-          "Built on a GitHub-hosted Windows x64 runner. The program was compiled but not executed." >> $env:GITHUB_STEP_SUMMARY
+          "Build system: **$env:BUILD_MODE**" >> $env:GITHUB_STEP_SUMMARY
+          "Executable/DLL files collected: **$($files.Count)**" >> $env:GITHUB_STEP_SUMMARY
+          "Download **windows-exe** from this run's Artifacts section." >> $env:GITHUB_STEP_SUMMARY
+          "The program was compiled but not executed." >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Upload Windows executable
+      - name: Upload Windows executable and DLLs
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
