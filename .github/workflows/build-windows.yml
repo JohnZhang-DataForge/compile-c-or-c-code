@@ -57,7 +57,7 @@ jobs:
       run:
         shell: pwsh
     env:
-      ZIP_PATH: ${{ inputs.zip_path }}
+      ZIP_PATH: ${{ inputs.zip_path || (github.event_name == 'push' && 'totk-pc-main.zip') }}
       PROJECT_SUBDIR: ${{ inputs.project_subdir }}
       SOURCE_DIR: ${{ inputs.source_dir || 'src' }}
       BUILD_MODE: ${{ inputs.mode || 'auto' }}
@@ -149,6 +149,27 @@ jobs:
           "PROJECT_ROOT=$projectRoot" >> $env:GITHUB_ENV
           "PROJECT_ROOT=$projectRoot" >> $env:GITHUB_OUTPUT
           "Project source: $projectRoot" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Inspect uploaded project archive
+        if: github.event_name == 'push' && inputs.zip_path == ''
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archivePath = Join-Path $env:GITHUB_WORKSPACE 'totk-pc-main.zip'
+          Add-Type -AssemblyName System.IO.Compression
+          $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+          try {
+            $entries = @($archive.Entries)
+            "Archive entries: $($entries.Count)" | Write-Host
+            $entries | Select-Object -First 250 -ExpandProperty FullName | ForEach-Object { Write-Host $_ }
+            foreach ($pattern in @('*/README*','README*','*/build.bat','build.bat','*/CMakeLists.txt','CMakeLists.txt','*/.gitmodules','.gitmodules','*/requirements*.txt','requirements*.txt','*/pyproject.toml','pyproject.toml')) {
+              foreach ($entry in $entries | Where-Object { $_.FullName -like $pattern -and $_.Length -lt 150000 }) {
+                Write-Host "`n===== $($entry.FullName) ====="
+                $reader = [IO.StreamReader]::new($entry.Open())
+                try { Write-Host ($reader.ReadToEnd()) } finally { $reader.Dispose() }
+              }
+            }
+          } finally { $archive.Dispose() }
+          "Inspected totk-pc-main.zip ($($entries.Count) entries). See logs for project-specific build instructions." >> $env:GITHUB_STEP_SUMMARY
 
       - name: Detect build system
         run: |
