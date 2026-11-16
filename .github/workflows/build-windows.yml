@@ -154,8 +154,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $cmakeFile = Join-Path $env:PROJECT_ROOT 'CMakeLists.txt'
+          $buildScript = Join-Path $env:PROJECT_ROOT 'build.bat'
           if ($env:BUILD_MODE -eq 'auto') {
-            if (Test-Path -LiteralPath $cmakeFile -PathType Leaf) {
+            if (Test-Path -LiteralPath $buildScript -PathType Leaf) {
+              throw 'This project provides a custom build.bat. The generic builder will not guess its dependencies or required inputs; inspect and configure the project-specific build before compiling.'
+            } elseif (Test-Path -LiteralPath $cmakeFile -PathType Leaf) {
               $env:BUILD_MODE = 'cmake'
             } else {
               $env:BUILD_MODE = 'simple'
