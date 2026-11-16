@@ -1,0 +1,112 @@
+name: Build Windows EXE
+run-name: Build Windows EXE — ${{ inputs.source_dir || 'src' }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_dir:
+        description: Source directory containing your C / C++ files
+        default: src
+        required: true
+        type: string
+      mode:
+        description: auto discovers sources; cmake uses your CMakeLists.txt
+        default: auto
+        type: choice
+        options: [auto, cmake]
+      exe_name:
+        description: Executable name without .exe (auto mode)
+        default: program
+        required: true
+        type: string
+      build_type:
+        description: Build configuration
+        default: Release
+        type: choice
+        options: [Release, Debug]
+      target:
+        description: Optional CMake target (cmake mode only)
+        default: ''
+        type: string
+  push:
+    paths:
+      - .github/workflows/build-windows.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SOURCE_DIR: ${{ inputs.source_dir || 'src' }}
+      BUILD_MODE: ${{ inputs.mode || 'auto' }}
+      EXE_NAME: ${{ inputs.exe_name || 'program' }}
+      BUILD_TYPE: ${{ inputs.build_type || 'Release' }}
+      CMAKE_TARGET: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $source = [IO.Path]::GetFullPath((Join-Path $root $env:SOURCE_DIR))
+          if ($source -ne $root -and -not $source.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Source directory must be inside this repository.'
+          }
+          if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw "Source directory not found: $source" }
+          $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
+          $args = @('-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64')
+          if ($env:BUILD_MODE -eq 'auto') {
+            if ($env:EXE_NAME -notmatch '^[A-Za-z0-9_-]+$') { throw 'Use letters, digits, underscores or hyphens for the executable name.' }
+            $args += @('-S', (Join-Path $root 'tools/auto-project'), "-DINPUT_SOURCE=$source", "-DOUTPUT_NAME=$env:EXE_NAME")
+          } elseif ($env:BUILD_MODE -eq 'cmake') {
+            if (-not (Test-Path -LiteralPath (Join-Path $source 'CMakeLists.txt'))) { throw 'CMake mode requires CMakeLists.txt in the source directory.' }
+            $args += @('-S', $source)
+          } else { throw 'Unsupported build mode.' }
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
+
+      - name: Compile and link
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
+          $args = @('--build', $build, '--config', $env:BUILD_TYPE, '--parallel', '2')
+          if ($env:BUILD_MODE -eq 'cmake' -and $env:CMAKE_TARGET) {
+            if ($env:CMAKE_TARGET -notmatch '^[A-Za-z0-9_.+-]+$') { throw 'Invalid CMake target name.' }
+            $args += @('--target', $env:CMAKE_TARGET)
+          }
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Check the compiler errors above.' }
+
+      - name: Collect executables and DLLs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:RUNNER_TEMP 'uploaded-code-build'
+          $artifact = Join-Path $env:RUNNER_TEMP 'windows-exe'
+          New-Item -ItemType Directory -Force -Path $artifact | Out-Null
+          $files = @(Get-ChildItem -LiteralPath $build -Recurse -File | Where-Object {
+            $_.Extension -in '.exe', '.dll', '.pdb' -and $_.FullName -notmatch '[\\/]CMakeFiles[\\/]'
+          })
+          if (-not ($files | Where-Object Extension -eq '.exe')) { throw 'Build produced no executable.' }
+          foreach ($file in $files) {
+            $relative = [IO.Path]::GetRelativePath($build, $file.FullName)
+            $destination = Join-Path $artifact $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+            Copy-Item -LiteralPath $file.FullName -Destination $destination
+          }
+          "## Windows build succeeded" >> $env:GITHUB_STEP_SUMMARY
+          "Download **windows-exe** from this run's Artifacts section and extract it." >> $env:GITHUB_STEP_SUMMARY
+          "Built on a GitHub-hosted Windows x64 runner. The program was compiled but not executed." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: ${{ runner.temp }}/windows-exe/
+          if-no-files-found: error
+          retention-days: 7
