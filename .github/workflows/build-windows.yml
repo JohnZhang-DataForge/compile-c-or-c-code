@@ -190,7 +190,7 @@ jobs:
             if ($env:CMAKE_TARGET -notmatch '^[A-Za-z0-9_.+-]+$') { throw 'Invalid CMake target name.' }
             $cmakeArgs += @('--target', $env:CMAKE_TARGET)
           }
-          & cmake @args
+          & cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { throw 'Compilation failed. Check compiler errors and missing dependency messages above.' }
 
       - name: Collect executables and build-produced DLLs
