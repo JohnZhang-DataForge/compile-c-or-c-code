@@ -19,12 +19,12 @@ The original folder option is preserved. Leave **ZIP path** empty, set **Source 
 
 ## Build modes and project requirements
 
-- **auto**: If the selected project root contains `CMakeLists.txt`, configure and build it as a CMake project. Otherwise recursively compile `.c`, `.cc`, `.cpp`, and `.cxx` files into one executable.
+- **auto**: If the project root contains `build.bat`, stop and require project-specific review rather than guessing its custom build prerequisites. Otherwise, if it contains `CMakeLists.txt`, configure and build it as a CMake project. If neither exists, recursively compile `.c`, `.cc`, `.cpp`, and `.cxx` files into one executable.
 - **cmake**: Requires `CMakeLists.txt` in the selected project root. Use this for real multi-target projects, libraries, generated code, resources, Windows subsystem settings, and projects with external dependencies. Set the optional CMake target only when you need a particular target.
 - **simple**: Uses the repository's generic CMake wrapper to compile source files into one executable. This is intended for small projects with a single program entry point, not complex engines or projects that need custom link flags or third-party libraries.
 
 The runner checks ZIP entry paths before extraction and rejects absolute paths, parent-directory traversal, and symbolic links. Extraction takes place under the runner's temporary directory. Git submodules referenced by the checked-out repository are initialized, but a ZIP itself does not carry Git submodule metadata: include required dependency source in the ZIP or arrange for the project's CMake build to fetch it. Network access, licenses, SDKs, game data, generated assets, and other project-specific prerequisites may still be required.
 
-The workflow compiles but does not execute the resulting program. It collects executables and DLLs produced in the CMake build tree; it does not automatically discover arbitrary runtime assets or DLLs installed elsewhere on the runner. Review the build logs for missing dependencies and copy any required runtime data into the project build/install rules.
+This repository is public. Do not commit proprietary game dumps, ROM/ExeFS/RomFS data, keys, saves, generated game code, or other copyrighted game assets here. Keep such inputs out of the ZIP and arrange a private, access-controlled build input if the project requires them. The workflow compiles but does not execute the resulting program. It collects executables and DLLs produced in the CMake build tree; it does not automatically discover arbitrary runtime assets or DLLs installed elsewhere on the runner. Review the build logs for missing dependencies and copy any required runtime data into the project build/install rules.
 
 Do not include passwords, private keys, access tokens, or other secrets in uploaded ZIP files.
